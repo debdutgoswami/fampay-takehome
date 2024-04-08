@@ -1,0 +1,74 @@
+version: '2.24'
+services:
+  db:
+    image: postgres:15.3-alpine3.18
+    restart: always
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+    ports:
+      - '5432:5432'
+    volumes:
+      - ./db:/var/lib/postgresql/data
+      - ./create-db.sql:/docker-entrypoint-initdb.d/create_database.sql
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready", "-d", "youtube" ]
+      interval: 30s
+      timeout: 60s
+      retries: 5
+      start_period: 80s
+
+  redis:
+    restart: always
+    image: redis:7.0.5-alpine
+
+  migration:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: python3 manage.py migrate --noinput
+    env_file:
+      - ./.env
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_started
+
+  worker:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: celery -A youtube worker --loglevel=INFO
+    env_file:
+      - ./.env
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+
+  scheduler:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    command: celery -A youtube beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    env_file:
+      - ./.env
+    depends_on:
+      migration:
+        condition: service_completed_successfully
+
+  server:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+#    command: gunicorn -w 1 --env DJANGO_SETTINGS_MODULE=youtube.settings -b 0.0.0.0:8000 youtube.wsgi
+    command: python3 manage.py runserver 0.0.0.0:8000
+    env_file:
+      - ./.env
+    ports:
+      - '8000:8000'
+    networks:
+      - default
+    depends_on:
+      migration:
+        condition: service_completed_successfully
